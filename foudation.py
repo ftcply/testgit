@@ -30,7 +30,7 @@ log.getLogger('').addHandler(console)
 class db:
   _db={
        '172':{'host':'172.30.2.172','port': 3308,'user':'ogg','passwd':'ogg','db':'test','charset':'utf8'},
-       '175':'ogg/ogg@172.30.2.175:1521/dbopsmt',
+       '175':'ogg/ogg@172.20.20.175:1521/dbopsmt',
        '103':'crm_user/dqa_testic@172.17.3.103:1521/mpay',
        '222':{'host':'172.20.4.222','port': 3306,'user':'ki','passwd':'ki','db':'ki','charset':'utf8'},
        '503':{'host':'10.0.50.3','port': 3308,'user':'root','passwd':'root#1234','db':'xdata_base','charset':'utf8'},
@@ -78,8 +78,7 @@ class db:
     rs = self._cur.fetchall()
     return rs
 
-  def getdata(self, str, **kv):
-    '''str can be table or sql'''
+  def getdata(self, tname, **kv):
     where=limit=''
     cols='*'
     if kv.has_key('where'):
@@ -92,7 +91,7 @@ class db:
         limit='and rownum <= %s' % n
       elif self._dbtype=='mysql':
         limit='limit %s' % n
-    sql='select %s from %s where 1=1 %s %s' % (cols, str, where, limit)
+    sql='select %s from %s where 1=1 %s %s' % (cols, tname, where, limit)
     self.query(sql)
     rs = self._cur.fetchall()
     log.info('get %s records, sql:%s' % (len(rs), sql))
@@ -164,15 +163,27 @@ class db:
       return rs[0][0]
     elif self._dbtype=='mysql':
       return ''.join(rs[0])
-
+    
 
   def commit(self):
     self._conn.commit()
+
+  def tocsv(self, data, file=None):
+    import csv
+    import datetime
+    if(file is None):
+      file='tmp_%s' % datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+    f = open(file, "w")
+    writer = csv.writer(f, lineterminator="\n", quoting=csv.QUOTE_NONNUMERIC)
+    for i in data:
+      writer.writerow(i)
+    f.close()
 
 
 if __name__ == '__main__':
 
   def cols_filter(x,y):
+    '''源表字段跟目标表字段会有不一致的情况，原本是不应该存在的，既然存在了，那就取他们的交集，这样就杜绝了字段不一致导致插入失败的情况了'''
     _t=set(x)-set(y)
     if len(_t)>0:
       log.warning('cols inconsistent, source > distination: %s(%s cols)' % (','.join(_t), len(_t) ) )
@@ -187,9 +198,7 @@ if __name__ == '__main__':
     f=db(s)
     t=db(d)
     cols=[]
-    #if kv.has_Key('where'):
-    #  where=kv['where']
-    #
+
     if kv.has_key('cols'):
       cols=kv['cols']
 
@@ -204,15 +213,14 @@ if __name__ == '__main__':
       rs=list(rs)
     t.bulkinsert(td, rs, cols)
 
-  #o=db('175')
-  #rs=o.getschema('acc_user.t_order_leftpaylist')
-  #print rs
-  #print '####################'
-  #m=db('172')
-  #rs=m.getschema('rd_acc_user.t_order_leftpaylist')
-  #print rs
-  #o=db('103')
-  #rs=o.getschema('crm_user.t_bs_user')
-  #print rs
+  #获取建表语句
+  o=db('103')
+  rs=o.getschema('crm_user.t_bs_user')
+  print rs
   
-  getsetdata('175','local','crm_user.t_bs_user','crm_user.t_bs_user',where='and rownum < 10')
+  exit('xxoo')
+  
+  #getsetdata('103','local','crm_user.t_bs_user','crm_user.t_bs_user',where='and rownum < 100')
+  o=db('175')
+  rs=o.getdata('crm_user.t_bs_user', where='and rownum < 10')
+  print rs
