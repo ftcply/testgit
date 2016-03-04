@@ -29,13 +29,14 @@ log.getLogger('').addHandler(console)
 
 class db:
   _db={
+       '503':{'host':'10.0.50.3','port': 3308,'user':'root','passwd':'root#1234','db':'xdata_base','charset':'utf8'},
+       '14':'XDATA_USER/bigdata_1019@10.0.116.14:1521/mpaybak',
        '172':{'host':'172.20.20.172','port': 3308,'user':'ogg','passwd':'ogg','db':'test','charset':'utf8'},
        '175':'ogg/ogg@172.20.20.175:1521/dbopsmt',
        '222':{'host':'172.20.4.222','port': 3306,'user':'ki','passwd':'ki','db':'ki','charset':'utf8'},
-       '503':{'host':'10.0.50.3','port': 3308,'user':'root','passwd':'root#1234','db':'xdata_base','charset':'utf8'},
-       '14':'XDATA_USER/bigdata_1019@10.0.116.14:1521/mpaybak',
        '106':'ogg/ogg@172.30.2.106:1521/dbopsmt',
       }
+
   _conn = None
   _cur = None
   _dbtype=''
@@ -64,23 +65,49 @@ class db:
   def close(self):
     self.close()
   
-
-  def getdata(self, str, where=''):
-    '''str can be table or sql'''
-    sql=self.getsql(str,where)
-    log.info(sql)
+  def getdata(self, tname, **kv):
+    where=limit=''
+    cols='*'
+    if kv.has_key('where'):
+      where=kv['where']
+    if kv.has_key('cols'):
+      #cols=','.join(kv['cols'])
+      cols=kv['cols']
+      print 'kv: ', kv
+      #print 'cols: ', cols
+      #return '123'
+    if kv.has_key('limit'):
+      n=kv['limit']
+      if self._dbtype=='oracle':
+        limit='and rownum <= %s' % n
+      elif self._dbtype=='mysql':
+        limit='limit %s' % n
+    sql='select %s from %s where 1=1 %s %s' % (cols, tname, where, limit)
     self.query(sql)
-    rs = self._cur.fetchall()  
+    rs = self._cur.fetchall()
     log.info('get %s records, sql:%s' % (len(rs), sql))
     return rs
 
-  def getsql(self, str, where):
-    '''getsql'''
-    if len(str.split(' ')) > 1:
-      _sql=str
-    else:
-      _sql='select * from %s where 1=1 %s' % (str,where)
-    return _sql
+  def truncate(self, tname):
+    sql='truncate table %s' % tname
+    try:
+      log.info(sql)
+      self.query(sql)
+    except Exception, e:
+      log.error('truncate table failed')
+      log.error(e)
+      return -1
+    return 0
+
+  def getdata_sql(self, sql):
+    try:
+      self.query(sql)
+    except Exception, e:
+      log.error('db error')
+      log.error(e)
+      return []
+    rs = self._cur.fetchall()
+    return rs
 
   def getcols(self,table):
     if table.find('.')<=0:
@@ -88,18 +115,21 @@ class db:
       return []
     db,tb=table.split('.')
     if self._dbtype=='oracle':
-      _sql="select lower(column_name) from all_tab_columns where table_name=upper('%s') and owner=upper('%s')" % (tb, db)
+      #_sql="select lower(column_name) from all_tab_columns where table_name=upper('%s') and owner=upper('%s')" % (tb, db)
+      _sql="select lower(column_name) from all_tab_columns where table_name=upper('%s') and owner=upper('%s') and lower(data_type) not in ('clob','blob')" % (tb, db)
     else:
       _sql="select lower(column_name) from information_schema.columns where upper(table_name) = upper('%s') and upper(table_schema)=upper('%s') " % (tb, db)  
-    _rs=self.getdata(_sql)
+    log.info(_sql)
+    _rs=self.getdata_sql(_sql)
     if len(_rs)==0:
       log.warning('can not find cols for table: %s, find sql: %s' % (table, _sql))
       return []
     return [i[0] for i in _rs]
  
-  def bulkinsert(self, table, data): 
-    d=self.getcols(table)
-    cols=','.join(d)
+  def bulkinsert(self, table, data, cols): 
+    #d=self.getcols(table)
+    d=cols
+    cols=','.join(cols)
     if self._dbtype=='mysql':
       str_value=','.join("%s" for i in range(len(d)))
     else:
@@ -107,6 +137,7 @@ class db:
       
     _sql='replace into %s(%s)values(%s);' % (table,cols,str_value)
 
+    n=0
     try:
       n=self._cur.executemany(_sql,data)
     except Exception, e:
@@ -126,6 +157,17 @@ class db:
 
 if __name__ == '__main__':
 
+  def cols_filter(x,y):
+    '''源表字段跟目标表字段会有不一致的情况，原本是不应该存在的，既然存在了，那就取他们的交集，这样就杜绝了字段不一致导致插入失败的情况了'''
+    _t=set(x)-set(y)
+    if len(_t)>0:
+      log.warning('cols inconsistent, source > distination: %s(%s cols)' % (','.join(_t), len(_t) ) )
+    _t=set(y)-set(x)
+    if len(_t)>0:
+      log.warning('cols inconsistent, source < distination: %s(%s cols)' % (','.join(_t), len(_t) ) )
+    log.info('intersection is: %s' % ','.join(set(x)&set(y)))
+    return list(set(x)&set(y))
+
   def getsetdata(conn_s, conn_d, tb_s, tb_d, where=''):
     start=time.time()
     '''from oracle to mysql'''
@@ -141,17 +183,20 @@ if __name__ == '__main__':
     if len(dcol)==0:
       return '%s no cols' % tb_d
     #print 'source: %s \ndestination: %s' % (scol, dcol)
-    if check(scol, dcol)!=0:
-      log.error('cols inconsistent: source: %s, destination: %s' % (scol, dcol))
-      return 'table cols inconsistent'
+    #if check(scol, dcol)!=0:
+    #  log.error('cols inconsistent: source: %s, destination: %s' % (scol, dcol))
+    #  return 'table cols inconsistent'
+    cols=cols_filter(scol, dcol)
+    #print 'colsxxx: ', cols
+    #return 'xxxxxx'
  
     rs=[]
 
     sum=0
     if '@' in where:
       loadid = where.lstrip('@')
-      _maxid = cd.getdata('select ifnull(min(%s),0), ifnull(max(%s),0) from %s' % (loadid, loadid,  tb_d))
-      _maxid2 = cs.getdata('select coalesce(min(%s),0), coalesce(max(%s),0) from %s' % (loadid, loadid, tb_s))
+      _maxid = cd.getdata_sql('select ifnull(min(%s),0), ifnull(max(%s),0) from %s' % (loadid, loadid,  tb_d))
+      _maxid2 = cs.getdata_sql('select coalesce(min(%s),0), coalesce(max(%s),0) from %s' % (loadid, loadid, tb_s))
       mid= _maxid[0][1]
       bid = _maxid2[0][1]
 
@@ -177,7 +222,8 @@ if __name__ == '__main__':
           log.info('本次拉取 [%s, %s) 的数据' % (beg, end))
           _where='and %s >= %s and %s < %s' % (loadid, beg, loadid, end)
 
-          rs=cs.getdata(tb_s, _where)
+          cols_str=','.join(cols)
+          rs=cs.getdata(tb_s, where=_where, cols=cols_str)
     
           if len(rs)==0:
             _msg='%s no data' % tb_s
@@ -186,7 +232,7 @@ if __name__ == '__main__':
     
           tocsv(rs, '123.log')
         
-          x=cd.bulkinsert(tb_d, rs)
+          x=cd.bulkinsert(tb_d, rs, cols)
           sum+=x
 
           if x==0:
@@ -198,17 +244,23 @@ if __name__ == '__main__':
 
         
     else:
+      where_str=where
       if where.find('|')>0:
         '''对LPL_TRANS_TIME|dt这样格式的作特殊处理'''
         dtkey,dt=where.split('|')
-        where="and %s >= to_date('%s','yyyy-mm-dd') and %s < to_date('%s','yyyy-mm-dd')+1" % (dtkey, dt, dtkey, dt)
-
-      rs=cs.getdata(tb_s, where)
+        where_str="and %s >= to_date('%s','yyyy-mm-dd') and %s < to_date('%s','yyyy-mm-dd')+1" % (dtkey, dt, dtkey, dt)
+      cols_str=','.join(cols)
+      rs=cs.getdata(tb_s, where=where_str, cols=cols_str)
+      #print 'rs xxx: ', rs
+      #return '12345'
       if len(rs)==0:
         log.warning('not data')
         return 'not data'
 
-      sum=cd.bulkinsert(tb_d, rs)  
+      if 'crm_user' in tb_d:
+        print 'where xxx: ', where
+        cd.truncate(tb_d)
+      sum=cd.bulkinsert(tb_d, rs, cols)  
 
     end=time.time()
     log.info('effect records: %s, spend time:%ss |%s' % (sum, int(end - start), tb_d))
@@ -314,7 +366,7 @@ if __name__ == '__main__':
 #'t_system_feerate_route':{'ts':'xdata_user.t_system_feerate_route','td':'rd_crm_user.t_system_feerate_route','where':''},
 #'adj_bill':{'ts':'xdata_user.adj_bill','td':'rd_acc_user.adj_bill','where':'operdate|'+dt},
 #'postrade':{'ts':'xdata_user.postrade','td':'rd_acc_user.postrade','where':'systrdtime|'+dt},
-##'t_adjust_account_detail':{'ts':'xdata_user.t_adjust_account_detail','td':'rd_acc_user.t_adjust_account_detail','where':'ori_cleardate|'+dt},
+#'t_adjust_account_detail':{'ts':'xdata_user.t_adjust_account_detail','td':'rd_acc_user.t_adjust_account_detail','where':'ori_cleardate|'+dt},
 #'t_adjust_account_detail':{'ts':'xdata_user.t_adjust_account_detail','td':'rd_acc_user.t_adjust_account_detail','where':''}, #截至20160607才8000+条
 #'t_order_main':{'ts':'xdata_user.t_order_main','td':'rd_acc_user.t_order_main','where':'trans_time|'+dt},
 #'trdfat_profit':{'ts':'xdata_user.trdfat_profit','td':'rd_acc_user.trdfat_profit','where':'@autoid'},
@@ -326,8 +378,6 @@ if __name__ == '__main__':
 #'t_r_tradelist':{'ts':'xdata_user.t_r_tradelist','td':'rd_nac_user.t_r_tradelist','where':'rtl_time|'+dt},
 #'t_l_tradelist':{'ts':'xdata_user.t_l_tradelist','td':'rd_nac_user.t_l_tradelist','where':'ltl_time|'+dt},
 #'t_bank_card':{'ts':'xdata_user.t_bank_card','td':'rd_nac_user.t_bank_card','where':''},
-#'pytest':{'ts':'crm_user.pytest','td':'test.pytest','where':'@@userid'},
-
 't_putmachine':{'ts':'crm_user.t_putmachine','td':'rd_crm_user.t_putmachine','where':''},
 't_accinfo':{'ts':'crm_user.t_accinfo','td':'rd_crm_user.t_accinfo','where':''},
 't_accinfo_account':{'ts':'crm_user.t_accinfo_account','td':'rd_crm_user.t_accinfo_account','where':''},
@@ -364,7 +414,8 @@ if __name__ == '__main__':
 't_r_tradelist':{'ts':'nac_user.t_r_tradelist','td':'rd_nac_user.t_r_tradelist','where':'rtl_time|'+dt},
 't_l_tradelist':{'ts':'nac_user.t_l_tradelist','td':'rd_nac_user.t_l_tradelist','where':'ltl_time|'+dt},
 't_bank_card':{'ts':'nac_user.t_bank_card','td':'rd_nac_user.t_bank_card','where':''},
-'pytest':{'ts':'crm_user.pytest','td':'test.pytest','where':'@userid'}
+'pytest':{'ts':'crm_user.pytest','td':'test.pytest','where':''}
+
         }
 
   #如果指定了表，就只跑这些表
@@ -384,8 +435,9 @@ if __name__ == '__main__':
 
   pool = multiprocessing.Pool(processes=pro)
   for i in tables:
-    #result.append(pool.apply_async(getsetdata, ('175','222',tables[i]['ts'],tables[i]['td'],tables[i]['where'])))
-    result.append(pool.apply_async(getsetdata, ('175','222',tables[i]['ts'],tables[i]['td'],'and rownum<10')))  #测试用
+    #result.append(pool.apply_async(getsetdata, ('14','503',tables[i]['ts'],tables[i]['td'],tables[i]['where'])))
+    result.append(pool.apply_async(getsetdata, ('175','222',tables[i]['ts'],tables[i]['td'],'and rownum < 16')))
+    #result.append(pool.apply_async(getsetdata, ('175','222',tables[i]['ts'],tables[i]['td'],tables[i]['where'])))  #测试用
 
   pool.close()
   pool.join()
