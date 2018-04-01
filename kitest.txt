@@ -4,4 +4,8 @@ monte.cristo
 test 0331
 teset.0331..
 ashitaka
+<<<<<<< HEAD
 from master branch
+=======
+from testing branch
+>>>>>>> testing
